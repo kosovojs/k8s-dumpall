@@ -39,7 +39,6 @@ func main() {
 	config.QPS = 1000
 	config.Burst = 1000
 
-	// Create clients
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		fmt.Printf("Failed to create dynamic client: %v\n", err)
@@ -51,14 +50,12 @@ func main() {
 		return
 	}
 
-	// Get all resources in the cluster
 	resourceList, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
 		fmt.Printf("Failed to discover resources: %v\n", err)
 		return
 	}
 
-	// Resources to skip
 	skippedResources := sets.NewString("leases", "events", "endpointslices", "selfsubjectreviews",
 		"tokenreviews", "localsubjectaccessreviews", "selfsubjectrulesreviews",
 		"subjectaccessreviews", "selfsubjectaccessreviews", "bindings", "componentstatuses",
@@ -66,19 +63,16 @@ func main() {
 
 	for _, apiGroup := range resourceList {
 		for _, resource := range apiGroup.APIResources {
-			// Skip non-namespaced resources if needed
 			if skippedResources.Has(strings.ToLower(resource.Name)) {
 				continue
 			}
 
-			// Prepare GVR
 			gvr := schema.GroupVersionResource{
 				Group:    getGroup(apiGroup.GroupVersion),
 				Version:  getVersion(apiGroup.GroupVersion),
 				Resource: resource.Name,
 			}
 
-			// Get resources
 			err = processResource(dynClient, gvr, resource.Namespaced)
 			if err != nil {
 				fmt.Printf("Failed to process resource %s: %v\n", resource.Name, err)
