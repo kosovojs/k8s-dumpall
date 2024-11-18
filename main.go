@@ -101,23 +101,26 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 		gvk := item.GroupVersionKind()
 		name := item.GetName()
 
-		// Write to YAML
-		err := writeYAML(ns, gvk, name, item.Object)
+		var dirPath string
+		if gvk.Group == "" {
+			dirPath = filepath.Join(outputDir, ns, fmt.Sprintf("%s.%s", gvk.Version, gvk.Kind))
+		} else {
+			dirPath = filepath.Join(outputDir, ns, fmt.Sprintf("%s.%s.%s", gvk.Group, gvk.Version, gvk.Kind))
+		}
+		if err := os.MkdirAll(dirPath, 0o755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
+		}
+		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", name))
+		err := writeYAML(filePath, item.Object)
 		if err != nil {
-			fmt.Printf("Failed to write YAML for %s/%s: %v\n", ns, name, err)
+			fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
 		}
 	}
 
 	return nil
 }
 
-func writeYAML(namespace string, gvk schema.GroupVersionKind, name string, obj map[string]interface{}) error {
-	dirPath := filepath.Join(outputDir, namespace, fmt.Sprintf("%s.%s.%s", gvk.Group, gvk.Version, gvk.Kind))
-	if err := os.MkdirAll(dirPath, 0o755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
-	}
-
-	filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", name))
+func writeYAML(filePath string, obj map[string]interface{}) error {
 	file, err := os.Create(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to create file %s: %v", filePath, err)
