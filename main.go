@@ -58,7 +58,7 @@ func main() {
 
 	skippedResources := sets.NewString("leases", "events", "endpointslices", "selfsubjectreviews",
 		"tokenreviews", "localsubjectaccessreviews", "selfsubjectrulesreviews",
-		"subjectaccessreviews", "selfsubjectaccessreviews", "bindings", "componentstatuses",
+		"subjectaccessreviews", "selfsubjectaccessreviews", "bindings", "componentstatuses", "replicasets",
 	)
 
 	for _, apiGroup := range resourceList {
