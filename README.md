@@ -44,6 +44,11 @@ go run github.com/guettli/dumpall@latest
 meld out-1 out
 ```
 
+## Related
+
+* [check-conditions](https://github.com/guettli/check-conditions) Tiny tool to check all conditions of all resources in your Kubernetes cluster.
+* [Thomas WOL: Working out Loud](https://github.com/guettli/wol) Articles, projects, and insights spanning various topics in software development.
+
 ## Feedback is welcome
 
 Please create an issue if you have a question or a feature request.
