@@ -2,8 +2,6 @@
 
 Dumps all Kubernetes resources into a directory structure:
 
-Attention: This dumps secrets, too!
-
 ```text
 out/NAMESPACE/GVK/NAME.yaml
 ```
