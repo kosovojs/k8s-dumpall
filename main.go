@@ -97,9 +97,9 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 
 		var dirPath string
 		if gvk.Group == "" {
-			dirPath = filepath.Join(outputDir, ns, fmt.Sprintf("%s.%s", gvk.Version, gvk.Kind))
+			dirPath = filepath.Join(outputDir, ns, gvk.Kind)
 		} else {
-			dirPath = filepath.Join(outputDir, ns, fmt.Sprintf("%s.%s.%s", gvk.Group, gvk.Version, gvk.Kind))
+			dirPath = filepath.Join(outputDir, ns, fmt.Sprintf("%s_%s", gvk.Group, gvk.Kind))
 		}
 		if err := os.MkdirAll(dirPath, 0o755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %v", dirPath, err)
