@@ -12,7 +12,7 @@ For example:
 out/kube-system/v1.ConfigMap/kubelet-config.yaml
 ```
 
-Attention: This dumps secrets, too!
+The resources of kind Secret are not dumped by default. If needed, use `--dump-secrets`.
 
 ## Via `go run`
 
