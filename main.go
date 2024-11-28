@@ -42,15 +42,36 @@ type options struct {
 	quiet             bool
 	dumpSecrets       bool
 	dumpManagedFields bool
+	removeOutdir      bool
 }
 
 func main() {
+	err := mainWithError()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func mainWithError() error {
 	opts := &options{}
-	pflag.StringVarP(&opts.outputDir, "output-dir", "o", "out", "Output directory")
+	pflag.StringVarP(&opts.outputDir, "out-dir", "o", "out", "Output directory (most not exist)")
 	pflag.BoolVarP(&opts.quiet, "quiet", "q", false, "Quiet, suppress output")
 	pflag.BoolVarP(&opts.dumpSecrets, "dump-secrets", "s", false, "Dump secrets (disabled by default)")
 	pflag.BoolVarP(&opts.dumpManagedFields, "dump-managed-fields", "m", false, "Dump managed fields (disabled by default)")
+	pflag.BoolVarP(&opts.removeOutdir, "remove-out-dir", "r", false, "Remove out-dir before dumping (disabled by default)")
 	pflag.Parse()
+
+	if opts.removeOutdir {
+		if err := os.RemoveAll(opts.outputDir); err != nil {
+			return fmt.Errorf("failed to remove out-dir %s: %w", opts.outputDir, err)
+		}
+	}
+
+	if _, err := os.Stat(opts.outputDir); err == nil {
+		return fmt.Errorf("output directory %q already exists", opts.outputDir)
+	}
+
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
@@ -70,19 +91,16 @@ func main() {
 
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		fmt.Printf("Failed to create dynamic client: %v\n", err)
-		return
+		return fmt.Errorf("Failed to create dynamic client: %w\n", err)
 	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		fmt.Printf("Failed to create discovery client: %v\n", err)
-		return
+		return fmt.Errorf("Failed to create discovery client: %w\n", err)
 	}
 
 	resourceList, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
-		fmt.Printf("Failed to discover resources: %v\n", err)
-		return
+		return fmt.Errorf("Failed to discover resources: %w\n", err)
 	}
 
 	var globalFileCount int64 = 0
@@ -113,6 +131,7 @@ func main() {
 		}
 	}
 	fmt.Printf("Total files written: %d\n", globalFileCount)
+	return nil
 }
 
 func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, isNamespaced bool, options *options) (count int64, err error) {
