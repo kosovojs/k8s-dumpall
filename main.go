@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -157,7 +158,7 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 		if err := os.MkdirAll(dirPath, 0o755); err != nil {
 			return fileCount, fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 		}
-		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", name))
+		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", sanitizePath(name)))
 		err := writeYAML(filePath, item.Object, options)
 		if err != nil {
 			fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
@@ -205,4 +206,10 @@ func getGroup(groupVersion string) string {
 func getVersion(groupVersion string) string {
 	parts := strings.Split(groupVersion, "/")
 	return parts[len(parts)-1]
+}
+
+var sanitizePathRegex = regexp.MustCompile(`[\\/:*?"'<>|!@#$%^&()+={}\[\];,]`)
+
+func sanitizePath(path string) string {
+	return sanitizePathRegex.ReplaceAllString(path, "_")
 }
