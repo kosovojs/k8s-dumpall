@@ -28,6 +28,10 @@ Written: out/_cluster/v1.Namespace/cert-manager.yaml    <-- non-namespaces resou
 ...
 ```
 
+## Usage
+
+[Usage](https://github.com/guettli/dumpall/blob/main/usage.md)
+
 ## See Changes
 
 After running dumpall you can modify your cluster, or just wait some time.

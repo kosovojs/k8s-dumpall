@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,12 +12,16 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gavv/cobradoc"
 	"github.com/spf13/pflag"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/cluster-api/cmd/clusterctl/cmd"
+	"sigs.k8s.io/kustomize/kyaml/kio"
 	yaml "sigs.k8s.io/yaml/goyaml.v3"
 )
 
@@ -44,9 +50,26 @@ type options struct {
 	dumpSecrets       bool
 	dumpManagedFields bool
 	removeOutdir      bool
+	fileName          string
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "gendocs" {
+		b := &bytes.Buffer{}
+		err := cobradoc.WriteDocument(b, cmd.RootCmd, cobradoc.Markdown, cobradoc.Options{})
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		usageFile := "usage.md"
+		err = os.WriteFile(usageFile, b.Bytes(), 0o600)
+		if err != nil {
+			fmt.Println(err)
+			os.Exit(1)
+		}
+		fmt.Printf("Created %q\n", usageFile)
+		os.Exit(0)
+	}
 	err := mainWithError()
 	if err != nil {
 		fmt.Println(err)
@@ -56,11 +79,12 @@ func main() {
 
 func mainWithError() error {
 	opts := &options{}
-	pflag.StringVarP(&opts.outputDir, "out-dir", "o", "out", "Output directory (most not exist)")
+	pflag.StringVarP(&opts.outputDir, "out-dir", "o", "out", "Output directory (must not exist)")
 	pflag.BoolVarP(&opts.quiet, "quiet", "q", false, "Quiet, suppress output")
 	pflag.BoolVarP(&opts.dumpSecrets, "dump-secrets", "s", false, "Dump secrets (disabled by default)")
 	pflag.BoolVarP(&opts.dumpManagedFields, "dump-managed-fields", "m", false, "Dump managed fields (disabled by default)")
 	pflag.BoolVarP(&opts.removeOutdir, "remove-out-dir", "r", false, "Remove out-dir before dumping (disabled by default)")
+	pflag.StringVarP(&opts.fileName, "file-name", "f", "", "read --- sperated manifests from file")
 	pflag.Parse()
 
 	if opts.removeOutdir {
@@ -72,15 +96,16 @@ func mainWithError() error {
 	if _, err := os.Stat(opts.outputDir); err == nil {
 		return fmt.Errorf("output directory %q already exists", opts.outputDir)
 	}
-
+	if opts.fileName != "" {
+		return readYamlFromFile(opts.fileName, opts)
+	}
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeconfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
 
 	config, err := kubeconfig.ClientConfig()
 	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(1)
+		return fmt.Errorf("failed to get client config: %w", err)
 	}
 
 	// 80 concurrent requests were served in roughly 200ms
@@ -92,19 +117,19 @@ func mainWithError() error {
 
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("Failed to create dynamic client: %w\n", err)
+		return fmt.Errorf("failed to create dynamic client: %w", err)
 	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		return fmt.Errorf("Failed to create discovery client: %w\n", err)
+		return fmt.Errorf("failed to create discovery client: %w", err)
 	}
 
 	resourceList, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
-		return fmt.Errorf("Failed to discover resources: %w\n", err)
+		return fmt.Errorf("failed to discover resources: %w", err)
 	}
 
-	var globalFileCount int64 = 0
+	var globalFileCount int64
 	sort.Slice(resourceList, func(i int, j int) bool {
 		return resourceList[i].GroupVersion < resourceList[j].GroupVersion
 	})
@@ -124,7 +149,7 @@ func mainWithError() error {
 				Resource: resource.Name,
 			}
 
-			fileCount, err := processResource(dynClient, gvr, resource.Namespaced, opts)
+			fileCount, err := processGVR(dynClient, gvr, resource.Namespaced, opts)
 			if err != nil {
 				fmt.Printf("Failed to process resource %q %s: %v\n", apiGroup.GroupVersion, resource.Name, err)
 			}
@@ -135,37 +160,83 @@ func mainWithError() error {
 	return nil
 }
 
-func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, isNamespaced bool, options *options) (count int64, err error) {
-	var fileCount int64 = 0
-	list, err := client.Resource(gvr).List(context.TODO(), meta.ListOptions{})
+func readYamlFromFile(fileName string, options *options) error {
+	fileCount := int64(0)
+	f, err := os.Open(fileName)
 	if err != nil {
-		return fileCount, fmt.Errorf("failed to list resources for %s: %v", gvr.Resource, err)
+		return fmt.Errorf("failed to open file %s: %w", fileName, err)
 	}
-	for _, item := range list.Items {
-		ns := item.GetNamespace()
-		if !isNamespaced {
-			ns = clusterNamespace
-		}
-		gvk := item.GroupVersionKind()
-		name := item.GetName()
-
-		var dirPath string
-		if gvk.Group == "" {
-			dirPath = filepath.Join(options.outputDir, ns, gvk.Kind)
-		} else {
-			dirPath = filepath.Join(options.outputDir, ns, fmt.Sprintf("%s_%s", gvk.Group, gvk.Kind))
-		}
-		if err := os.MkdirAll(dirPath, 0o755); err != nil {
-			return fileCount, fmt.Errorf("failed to create directory %s: %v", dirPath, err)
-		}
-		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", sanitizePath(name)))
-		err := writeYAML(filePath, item.Object, options)
+	defer f.Close()
+	bytes, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", fileName, err)
+	}
+	nodes, err := kio.FromBytes(bytes)
+	if err != nil {
+		return fmt.Errorf("failed to parse YAML: %w", err)
+	}
+	for i := range nodes {
+		node := nodes[i]
+		m, err := node.Map()
 		if err != nil {
-			fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
+			return fmt.Errorf("failed to convert node to map: %w", err)
+		}
+		u := &unstructured.Unstructured{Object: m}
+		ns, _, err := unstructured.NestedString(m, "metadata", "namespace")
+		if err != nil {
+			return fmt.Errorf("failed to get namespace for item %s: %w", u.GetName(), err)
+		}
+		isNamespaced := ns != ""
+		err = processUnstructured(u, isNamespaced, options)
+		if err != nil {
+			return fmt.Errorf("failed to process item %s: %w", u.GetName(), err)
 		}
 		fileCount++
 	}
-	return int64(fileCount), nil
+	fmt.Printf("Total files written: %d\n", fileCount)
+	return nil
+}
+
+func processGVR(client dynamic.Interface, gvr schema.GroupVersionResource, isNamespaced bool, options *options) (count int64, err error) {
+	var fileCount int64
+	list, err := client.Resource(gvr).List(context.TODO(), meta.ListOptions{})
+	if err != nil {
+		return fileCount, fmt.Errorf("failed to list resources for %s: %w", gvr.Resource, err)
+	}
+	for i := range list.Items {
+		item := &list.Items[i]
+		err := processUnstructured(item, isNamespaced, options)
+		if err != nil {
+			return fileCount, fmt.Errorf("failed to process item %s: %w", item.GetName(), err)
+		}
+		fileCount++
+	}
+	return fileCount, nil
+}
+
+func processUnstructured(item *unstructured.Unstructured, isNamespaced bool, options *options) error {
+	ns := item.GetNamespace()
+	if !isNamespaced {
+		ns = clusterNamespace
+	}
+	gvk := item.GroupVersionKind()
+	name := item.GetName()
+
+	var dirPath string
+	if gvk.Group == "" {
+		dirPath = filepath.Join(options.outputDir, ns, gvk.Kind)
+	} else {
+		dirPath = filepath.Join(options.outputDir, ns, fmt.Sprintf("%s_%s", gvk.Group, gvk.Kind))
+	}
+	if err := os.MkdirAll(dirPath, 0o755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", dirPath, err)
+	}
+	filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", sanitizePath(name)))
+	err := writeYAML(filePath, item.Object, options)
+	if err != nil {
+		fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
+	}
+	return nil
 }
 
 func writeYAML(filePath string, obj map[string]interface{}, options *options) error {
@@ -179,7 +250,7 @@ func writeYAML(filePath string, obj map[string]interface{}, options *options) er
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		return fmt.Errorf("failed to create file %s: %v", filePath, err)
+		return fmt.Errorf("failed to create file %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -187,7 +258,7 @@ func writeYAML(filePath string, obj map[string]interface{}, options *options) er
 	defer encoder.Close()
 	encoder.SetIndent(2)
 	if err := encoder.Encode(obj); err != nil {
-		return fmt.Errorf("failed to write YAML to file %s: %v", filePath, err)
+		return fmt.Errorf("failed to write YAML to file %s: %w", filePath, err)
 	}
 	if !options.quiet {
 		fmt.Printf("Written: %s\n", filePath)

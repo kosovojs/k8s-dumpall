@@ -1,0 +1,24 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+
+  # Common hooks
+  - id: trailing-whitespace
+    exclude: ^vendor/
+  - id: check-added-large-files
+  - id: check-merge-conflict
+
+  # This regex ("entry") must not be in our codebase.
+  - id: debug-statements
+    language: pygrep
+    entry: debug\.Stack
+    types: [go]
+    exclude: ^vendor/
+
+- repo: https://github.com/gitleaks/gitleaks
+  rev: v8.24.0
+  hooks:
+    - id: gitleaks
