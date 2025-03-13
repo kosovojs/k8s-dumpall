@@ -94,7 +94,7 @@ func mainWithError() error {
 	}
 
 	if _, err := os.Stat(opts.outputDir); err == nil {
-		return fmt.Errorf("output directory %q already exists", opts.outputDir)
+		return fmt.Errorf("output directory %q already exists. Use --remove-out-dir if you want to overwrite it", opts.outputDir)
 	}
 	if opts.fileName != "" {
 		return readYamlFromFile(opts.fileName, opts)
