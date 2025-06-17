@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,10 +11,12 @@ import (
 	"strings"
 
 	"github.com/spf13/pflag"
+	corev1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	yaml "sigs.k8s.io/yaml/goyaml.v3"
 )
@@ -156,14 +159,69 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 		if err := os.MkdirAll(dirPath, 0o755); err != nil {
 			return fileCount, fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 		}
-		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", strings.ReplaceAll(name, ":", "_")))
-		err := writeYAML(filePath, item.Object, options)
+		yamlFilePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", strings.ReplaceAll(name, ":", "_")))
+		err := writeYAML(yamlFilePath, item.Object, options)
 		if err != nil {
-			fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
+			fmt.Printf("Failed to write YAML for %s: %v\n", yamlFilePath, err)
+		}
+
+		// Dump logs if the resource is a Pod
+		if gvk.Kind == "Pod" {
+			err := dumpPodLogs(ns, name, dirPath, options)
+			if err != nil {
+				fmt.Printf("Failed to dump logs for Pod %s/%s: %v\n", ns, name, err)
+			}
 		}
 		fileCount++
 	}
 	return int64(fileCount), nil
+}
+
+func dumpPodLogs(namespace, podName, dirPath string, options *options) error {
+	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
+	if err != nil {
+		return fmt.Errorf("failed to build Kubernetes config: no in-cluster or kubeconfig found. Error: %v", err)
+	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create Kubernetes clientset: %v", err)
+	}
+
+	pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, meta.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get Pod %s/%s: %v", namespace, podName, err)
+	}
+
+	for _, container := range pod.Spec.Containers {
+		logOptions := &corev1.PodLogOptions{
+			Container: container.Name,
+		}
+		logRequest := clientset.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+
+		logs, err := logRequest.Stream(context.TODO())
+		if err != nil {
+			fmt.Printf("Failed to get logs for container %s in Pod %s/%s: %v\n", container.Name, namespace, podName, err)
+			continue
+		}
+		defer logs.Close()
+
+		logFilePath := filepath.Join(dirPath, fmt.Sprintf("%s_%s_logs.txt", podName, container.Name))
+		logFile, err := os.Create(logFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to create log file %s: %v", logFilePath, err)
+		}
+		defer logFile.Close()
+
+		_, err = io.Copy(logFile, logs)
+		if err != nil {
+			return fmt.Errorf("failed to write logs to file %s: %v", logFilePath, err)
+		}
+
+		if !options.quiet {
+			fmt.Printf("Written logs: %s\n", logFilePath)
+		}
+	}
+	return nil
 }
 
 func writeYAML(filePath string, obj map[string]interface{}, options *options) error {
