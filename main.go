@@ -33,8 +33,7 @@ var toSkip = map[string][]string{
 	},
 	"coordination.k8s.io/v1": {"leases"},
 	"discovery.k8s.io/v1":    {"endpointslices"},
-	"events.k8s.io/v1":       {"events"},
-	"v1":                     {"events", "bindings", "componentstatuses"},
+	"v1":                     {"bindings", "componentstatuses"},
 }
 
 type options struct {
@@ -55,9 +54,9 @@ func main() {
 
 func mainWithError() error {
 	opts := &options{}
-	pflag.StringVarP(&opts.outputDir, "out-dir", "o", "out", "Output directory (most not exist)")
+	pflag.StringVarP(&opts.outputDir, "out-dir", "o", "out", "Output directory (must not exist)")
 	pflag.BoolVarP(&opts.quiet, "quiet", "q", false, "Quiet, suppress output")
-	pflag.BoolVarP(&opts.dumpSecrets, "dump-secrets", "s", false, "Dump secrets (disabled by default)")
+	pflag.BoolVarP(&opts.dumpSecrets, "dump-secrets", "s", true, "Dump secrets")
 	pflag.BoolVarP(&opts.dumpManagedFields, "dump-managed-fields", "m", false, "Dump managed fields (disabled by default)")
 	pflag.BoolVarP(&opts.removeOutdir, "remove-out-dir", "r", false, "Remove out-dir before dumping (disabled by default)")
 	pflag.Parse()
@@ -91,16 +90,16 @@ func mainWithError() error {
 
 	dynClient, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("Failed to create dynamic client: %w\n", err)
+		return fmt.Errorf("failed to create dynamic client: %w\n", err)
 	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
-		return fmt.Errorf("Failed to create discovery client: %w\n", err)
+		return fmt.Errorf("failed to create discovery client: %w\n", err)
 	}
 
 	resourceList, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
-		return fmt.Errorf("Failed to discover resources: %w\n", err)
+		return fmt.Errorf("failed to discover resources: %w\n", err)
 	}
 
 	var globalFileCount int64 = 0
@@ -157,7 +156,7 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 		if err := os.MkdirAll(dirPath, 0o755); err != nil {
 			return fileCount, fmt.Errorf("failed to create directory %s: %v", dirPath, err)
 		}
-		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", name))
+		filePath := filepath.Join(dirPath, fmt.Sprintf("%s.yaml", strings.ReplaceAll(name, ":", "_")))
 		err := writeYAML(filePath, item.Object, options)
 		if err != nil {
 			fmt.Printf("Failed to write YAML for %s: %v\n", filePath, err)
