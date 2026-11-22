@@ -14,6 +14,8 @@ out/kube-system/v1.ConfigMap/kubelet-config.yaml
 
 The resources of kind Secret are not dumped by default. If needed, use `--dump-secrets`.
 
+Limit to namespaces with `-n ns1,ns2` (or repeat `-n`). Cluster-scoped resources are then skipped.
+
 ## Via `go run`
 
 The easiest way is to run the code like this:

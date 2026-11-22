@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -45,6 +46,7 @@ type options struct {
 	dumpSecrets       bool
 	dumpManagedFields bool
 	removeOutdir      bool
+	namespaces        []string
 }
 
 func main() {
@@ -62,6 +64,7 @@ func mainWithError() error {
 	pflag.BoolVarP(&opts.dumpSecrets, "dump-secrets", "s", true, "Dump secrets")
 	pflag.BoolVarP(&opts.dumpManagedFields, "dump-managed-fields", "m", false, "Dump managed fields (disabled by default)")
 	pflag.BoolVarP(&opts.removeOutdir, "remove-out-dir", "r", false, "Remove out-dir before dumping (disabled by default)")
+	pflag.StringSliceVarP(&opts.namespaces, "namespace", "n", nil, "Namespace(s) to dump, repeatable or comma-separated (default: all; cluster-scoped resources are skipped when set)")
 	pflag.Parse()
 
 	if opts.removeOutdir {
@@ -95,6 +98,10 @@ func mainWithError() error {
 	if err != nil {
 		return fmt.Errorf("failed to create dynamic client: %w\n", err)
 	}
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to create clientset: %w", err)
+	}
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(config)
 	if err != nil {
 		return fmt.Errorf("failed to create discovery client: %w\n", err)
@@ -102,7 +109,11 @@ func mainWithError() error {
 
 	resourceList, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
-		return fmt.Errorf("failed to discover resources: %w\n", err)
+		// partial discovery failures are common with limited RBAC
+		if len(resourceList) == 0 {
+			return fmt.Errorf("failed to discover resources: %w", err)
+		}
+		fmt.Printf("Partial discovery error: %v\n", err)
 	}
 
 	var globalFileCount int64 = 0
@@ -125,7 +136,7 @@ func mainWithError() error {
 				Resource: resource.Name,
 			}
 
-			fileCount, err := processResource(dynClient, gvr, resource.Namespaced, opts)
+			fileCount, err := processResource(dynClient, clientset, gvr, resource.Namespaced, opts)
 			if err != nil {
 				fmt.Printf("Failed to process resource %q %s: %v\n", apiGroup.GroupVersion, resource.Name, err)
 			}
@@ -136,13 +147,27 @@ func mainWithError() error {
 	return nil
 }
 
-func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, isNamespaced bool, options *options) (count int64, err error) {
+func processResource(client dynamic.Interface, clientset kubernetes.Interface, gvr schema.GroupVersionResource, isNamespaced bool, options *options) (count int64, err error) {
 	var fileCount int64 = 0
-	list, err := client.Resource(gvr).List(context.TODO(), meta.ListOptions{})
-	if err != nil {
-		return fileCount, fmt.Errorf("failed to list resources for %s: %v", gvr.Resource, err)
+	var items []unstructured.Unstructured
+	switch {
+	case len(options.namespaces) == 0:
+		list, err := client.Resource(gvr).List(context.TODO(), meta.ListOptions{})
+		if err != nil {
+			return fileCount, fmt.Errorf("failed to list resources for %s: %v", gvr.Resource, err)
+		}
+		items = list.Items
+	case isNamespaced:
+		for _, ns := range options.namespaces {
+			list, err := client.Resource(gvr).Namespace(ns).List(context.TODO(), meta.ListOptions{})
+			if err != nil {
+				fmt.Printf("Failed to list %s in namespace %q: %v\n", gvr.Resource, ns, err)
+				continue
+			}
+			items = append(items, list.Items...)
+		}
 	}
-	for _, item := range list.Items {
+	for _, item := range items {
 		ns := item.GetNamespace()
 		if !isNamespaced {
 			ns = clusterNamespace
@@ -167,7 +192,7 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 
 		// Dump logs if the resource is a Pod
 		if gvk.Kind == "Pod" {
-			err := dumpPodLogs(ns, name, dirPath, options)
+			err := dumpPodLogs(clientset, ns, name, dirPath, options)
 			if err != nil {
 				fmt.Printf("Failed to dump logs for Pod %s/%s: %v\n", ns, name, err)
 			}
@@ -177,16 +202,7 @@ func processResource(client dynamic.Interface, gvr schema.GroupVersionResource, 
 	return int64(fileCount), nil
 }
 
-func dumpPodLogs(namespace, podName, dirPath string, options *options) error {
-	config, err := clientcmd.BuildConfigFromFlags("", clientcmd.RecommendedHomeFile)
-	if err != nil {
-		return fmt.Errorf("failed to build Kubernetes config: no in-cluster or kubeconfig found. Error: %v", err)
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("failed to create Kubernetes clientset: %v", err)
-	}
-
+func dumpPodLogs(clientset kubernetes.Interface, namespace, podName, dirPath string, options *options) error {
 	pod, err := clientset.CoreV1().Pods(namespace).Get(context.TODO(), podName, meta.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get Pod %s/%s: %v", namespace, podName, err)
